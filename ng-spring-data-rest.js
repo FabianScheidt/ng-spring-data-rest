@@ -183,10 +183,10 @@ function authenticateWithOAuth2(flow, authEndpoint, username, password, client, 
 }
 
 /**
- * Retrieves an array of repository endpoint names provided by Spring Data REST using
- * the <host>/<basePath>/profile endpoints.
+ * Retrieves an array of repository endpoints provided by Spring Data REST using the
+ * <host>/<basePath>/profile endpoints.
  *
- * @returns {Promise<[]>} Promise for an array of strings containing the repository names.
+ * @returns {Promise<[]>} Promise for an array of objects containing the repository name and href.
  */
 function collectEntities() {
     return axiosInstance.get('profile')
@@ -197,9 +197,12 @@ function collectEntities() {
                 process.exit(4);
             }
             
-            const keys = Object.keys(response.data._links);
-            removeElementFromArray(keys, 'self');
-            return keys;
+            return Object.keys(response.data._links)
+                .filter(k => k !== 'self')
+                .map(k => ({
+                    name: k,
+                    href: response.data._links[k].href
+                }));
         })
         .catch(() => {
             console.error('Collecting entities failed.');
@@ -210,21 +213,20 @@ function collectEntities() {
 /**
  * Retrieves the JSON schema provided by Spring Data REST for each of the entities in the given array.
  *
- * @param entities An array containing strings with the name of each repository in Spring Data REST.
+ * @param entities An array containing the name and href of each profile in Spring Data REST.
  * @returns {Promise<[]>} Promise for an array of JSON schemas.
  */
 async function collectSchemas(entities) {
     const schemas = [];
     console.log('Collecting schemas.');
     
-    for (const element of entities) {
-        await axiosInstance.get(`profile/${element}`,
-                                {headers: {'Accept': 'application/schema+json'}})
+    for (const entity of entities) {
+        await axiosInstance.get(entity.href, {headers: {'Accept': 'application/schema+json'}})
             .then(response => {
                 schemas.push(response.data);
             })
             .catch(() => {
-                console.error(`Could not collect schema for '${element}'.`);
+                console.error(`Could not collect schema for '${entity.name}'.`);
                 process.exit(4);
             });
     }
@@ -326,7 +328,7 @@ async function generateTypeScriptFromSchema(schemas, entities, outputDir, modelD
             'className': className,
             'classNameKebab': classNameKebab,
             'modelDir': modelDir,
-            'repositoryName': entity
+            'repositoryName': entity.name
         };
         const renderedService = mustache.render(serviceTemplateString,
                                                 serviceTemplateData);
@@ -357,19 +359,6 @@ async function generateTypeScriptFromSchema(schemas, entities, outputDir, modelD
     fs.writeFileSync(`${outputDir}/${modelDir}.ts`, renderedModel);
     const renderedServices = mustache.render(servicesTemplateString, servicesTemplateData);
     fs.writeFileSync(`${outputDir}/${serviceDir}.ts`, renderedServices);
-}
-
-/**
- * Removes an element from an array in-place.
- *
- * @param array The array to process.
- * @param element The element to remove from the array.
- */
-function removeElementFromArray(array, element) {
-    const elementIndex = array.indexOf(element);
-    if (elementIndex > -1) {
-        array.splice(elementIndex, 1);
-    }
 }
 
 module.exports = ngSpringDataRest;
