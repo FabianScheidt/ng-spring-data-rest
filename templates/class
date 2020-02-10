@@ -5,9 +5,10 @@
  * and run ng-spring-data-rest to regenerate this file.
  */
 import { Resource } from '@lagoshny/ngx-hal-client';
+$$@#referencesOtherClasses@$$import { $$@referencedClasses@$$ } from '../models';$$@/referencesOtherClasses@$$
 
 $$@&interfaceDefinition@$$
-export class $$@className@$$ extends Resource implements $$@interfaceName@$$ {
+export class $$@className@$$ extends Resource {
 $$@&classAttributes@$$
   constructor() {
     super();

@@ -271,6 +271,66 @@ function removeTrivialTitles(object) {
 }
 
 /**
+ * In order to generate proper class definitions, we need to resolve string attributes with the
+ * format "uri" to their referenced entity. Since the JSON schema includes no info which entity
+ * is referenced, we need to use the alps description that Spring Data REST provides. This method
+ * fetches the alps description for the provieded schema and replaces occurrences of type "string"
+ * and format "uri" with type "object" and assigns the title of the referenced schema
+ *
+ * Note: This is probably not a good way to do this, as it assues both descriptions to be available.
+ * There are many reasons why this could break, but it seems to work fine for now...
+ *
+ * @param entity Entity to be processed
+ * @param schema Schema to be processed. The schema will be modified in place
+ * @param entities List of all entities
+ * @param schemas List of all schemas
+ * @returns {Promise<T>} Promise for an array of referenced schemas.
+ */
+async function resolveUrlStringReferences(entity, schema, entities, schemas) {
+    console.log('Collecting schema references.');
+
+    return axiosInstance.get(entity.href, {headers: {'Accept': 'application/alps+json'}})
+        .then(response => {
+            // Extract the entity descriptors for the current entity from the alps description
+            const descriptors = response.data.alps.descriptors;
+            const entityDescriptors = descriptors.find(d => d.href === entity.href).descriptors;
+
+            // Find which properties need to be modified
+            const properties = schema.properties;
+            const relevantPropertyNames = Object.keys(schema.properties)
+                .filter(k => properties[k].type === 'string' && properties[k].format === 'uri');
+
+            // Keep track of schemas that are referenced by the properties
+            const referencedSchemas = [];
+
+            // Now change the relevant properties
+            relevantPropertyNames.forEach(k => {
+                const property = properties[k];
+
+                // Change the type to be object and remove the format
+                property.type = 'object';
+                delete property.format;
+
+                // Find the referenced entity and map it to one of the known entities
+                let referencedHref = entityDescriptors.find(d => d.name === k).rt;
+                referencedHref = referencedHref.substr(0, referencedHref.lastIndexOf('#'));
+                const referencedEntity = entities.find(e => e.href === referencedHref);
+                const referencedSchema = schemas[entities.indexOf(referencedEntity)];
+                property.title = referencedSchema.title;
+
+                if (referencedSchema !== schema) {
+                    referencedSchemas.push(referencedSchema);
+                }
+            });
+            return referencedSchemas;
+        })
+        .catch((e) => {
+            console.error(`Could not collect schema references for '${entity.name}'.`);
+            process.exit(4);
+        });
+}
+
+/**
  * Generates TypeScript classes in the 'model' directory from the given JSON schemas.
  *
  * @param schemas The JSON schemas to convert.
@@ -297,25 +357,32 @@ async function generateTypeScriptFromSchema(schemas, entities, outputDir, modelD
         let interfaceDefinition = await jsonTs.compile(schema, schema.title, { bannerComment: null });
 
         // Add I to the beginning of each class name to indicate interface.
-        interfaceDefinition = interfaceDefinition.replace(REGEXP_TYPESCRIPT_INTERFACE_NAME, '$1I$2$3');
+        interfaceDefinition = interfaceDefinition.replace(REGEXP_TYPESCRIPT_INTERFACE_NAME, '$1$2Dto$3');
 
         // Construct filename for generated interface file.
         let matches = interfaceDefinition.match(REGEXP_TYPESCRIPT_INTERFACE_NAME);
 
         const interfaceName = matches[2];
-        const className = interfaceName.substr(1);
+        const className = interfaceName.substr(0, interfaceName.length - 3);
         const classNameKebab = _.kebabCase(className);
 
-        // Extract the attributes from the interface file
-        matches = interfaceDefinition.match(REGEXP_TYPESCRIPT_INTERFACE_ATTRIBUTES);
+        // Resolve string references to classes and build a definition of the class
+        const referencedSchemas = await resolveUrlStringReferences(entity, schema, entities, schemas);
+        const referencedClasses = referencedSchemas.map(s => s.title);
+        const options = { bannerComment: null, declareExternallyReferenced: false };
+        let classDefinition = await jsonTs.compile(schema, schema.title, options);
+
+        // Extract the attributes from the generated class file
+        matches = classDefinition.match(REGEXP_TYPESCRIPT_INTERFACE_ATTRIBUTES);
         const classAttributes = matches[1];
 
         // Create class from template file.
         const classTemplateData = {
             'interfaceDefinition': interfaceDefinition,
-            'interfaceName': interfaceName,
             'className': className,
-            'classAttributes': classAttributes
+            'classAttributes': classAttributes,
+            'referencesOtherClasses': referencedClasses.length > 0,
+            'referencedClasses': referencedClasses.join(', ')
         };
         const renderedClass = mustache.render(classTemplateString,
                                               classTemplateData);
